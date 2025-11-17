@@ -7,7 +7,8 @@ from langchain.memory import ConversationBufferWindowMemory
 import torch
 import datetime
 from typing import Any, Dict, Union
-from functions.context_engineering import get_context_data
+from mlfs.airquality.context_engineering import get_context_data
+# from context_engineering import get_context_data
 import os
 from safetensors.torch import load_model, save_model
 

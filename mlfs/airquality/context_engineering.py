@@ -8,7 +8,7 @@ import torch
 import sys
 import pandas as pd
 from openai import OpenAI
-from functions.air_quality_data_retrieval import (
+from mlfs.airquality.air_quality_data_retrieval import (
     get_historical_data_for_date,
     get_historical_data_in_date_range,
     get_future_data_in_date_range,
