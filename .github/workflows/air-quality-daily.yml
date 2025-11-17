@@ -29,7 +29,9 @@ jobs:
 
       - name: execute python workflows from bash script
         env:
+          AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
           HOPSWORKS_API_KEY: ${{ secrets.HOPSWORKS_API_KEY }}
+
         run: |
           ipython notebooks/airquality/2_air_quality_feature_pipeline.ipynb
           ipython notebooks/airquality/4_air_quality_batch_inference.ipynb
