@@ -16,15 +16,10 @@ import hsfs
 from pathlib import Path
 
 def get_historical_weather(city, start_date,  end_date, latitude, longitude):
-    # latitude, longitude = get_city_coordinates(city)
-
-    # Setup the Open-Meteo API client with cache and retry on error
     cache_session = requests_cache.CachedSession('.cache', expire_after = -1)
     retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
     openmeteo = openmeteo_requests.Client(session = retry_session)
 
-    # Make sure all required weather variables are listed here
-    # The order of variables in hourly or daily is important to assign them correctly below
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
         "latitude": latitude,
@@ -288,30 +283,17 @@ def check_file_path(file_path):
         print(f"File successfully found at the path: {file_path}")
 
 def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, model):
-    """
-    从历史 weather_fg + air_quality_df 里造一批“伪预测”，
-    用于第一次跑监控时填充 hindcast 数据。
-
-    注意：模型现在用的是 5 个特征：
-      pm25_rolling_mean_3d + 4 个天气特征
-    但监控的 Feature Group 只需要存预测结果和天气特征、位置信息，
-    不一定要把 rolling 特征也存进去。
-    """
-    # 1. 先读出天气特征，按时间排序，取最近 10 天
+ 
     features_df = weather_fg.read()
     features_df = features_df.sort_values(by=['date'], ascending=True)
     features_df = features_df.tail(10)
 
-    # 2. 从 air_quality_df 里取 rolling 特征，并按 date merge 上来
-    #    air_quality_df 里应该已经有 pm25_rolling_mean_3d 这一列（在训练前你已经加过）
     rolling_df = air_quality_df[['date', 'pm25_rolling_mean_3d']].copy()
     features_df = features_df.merge(rolling_df, on='date', how='left')
 
-    # 没有 rolling 特征的行先丢掉，避免模型抱怨
     features_df = features_df.dropna(subset=['pm25_rolling_mean_3d'])
     features_df['pm25_rolling_mean_3d'] = features_df['pm25_rolling_mean_3d'].astype('float32')
 
-    # 3. 用和训练时完全一致的 5 个特征做预测
     feature_cols = [
         'pm25_rolling_mean_3d',
         'temperature_2m_mean',
@@ -321,8 +303,6 @@ def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, 
     ]
     features_df['predicted_pm25'] = model.predict(features_df[feature_cols])
 
-    # 4. 把真实 pm25 和位置信息（street、country、city）拼回来
-    #    weather_fg 里一般有 city，air_quality_df 里也有 city，所以 merge 后可能会出现 city_x / city_y
     outcome_cols = ['date', 'pm25', 'street', 'country']
     if 'city' in air_quality_df.columns:
         outcome_cols.append('city')
@@ -333,28 +313,23 @@ def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, 
         how='inner'
     )
 
-    # ---- 关键修复点：整理 city 列 ----
-    # 如果 merge 后出现了 city_x / city_y，把它们合并成一个 city
     if 'city_x' in df.columns or 'city_y' in df.columns:
         if 'city_x' in df.columns and 'city_y' in df.columns:
-            # 一般两个是一样的，这里用 city_x
+          
             df['city'] = df['city_x']
         elif 'city_x' in df.columns:
             df['city'] = df['city_x']
         elif 'city_y' in df.columns:
             df['city'] = df['city_y']
-        # 把多余的 city_x / city_y 列删掉
+       
         df = df.drop(columns=[c for c in ['city_x', 'city_y'] if c in df.columns])
 
     df['days_before_forecast_day'] = 1
 
-    # hindcast_df：用来画对比图，需要真实值和预测值
+ 
     hindcast_df = df[['date', 'pm25', 'predicted_pm25']].copy()
 
-    # 5. 写入监控 Feature Group：
-    #    只保留和 notebook 里 batch_data.insert() 一致的列，
-    #    注意这里 **不要** 把 pm25（真实值）和 city_x/city_y 写进去。
-     # ---- 根据 monitor_fg 的 schema 动态确定要写的列 ----
+
     fg_cols = {feat.name.lower() for feat in monitor_fg.features}
 
     insert_cols = [
@@ -369,11 +344,11 @@ def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, 
         'country',
         'days_before_forecast_day',
     ]
-    # 如果 FG schema 里有 rolling，就一起写入
+  
     if 'pm25_rolling_mean_3d' in fg_cols:
-        insert_cols.insert(5, 'pm25_rolling_mean_3d')  # 放在天气特征之后
+        insert_cols.insert(5, 'pm25_rolling_mean_3d') 
 
-    # 只保留现有列（防 KeyError）
+   
     insert_cols = [c for c in insert_cols if c in df.columns]
     insert_df = df[insert_cols].copy()
 
