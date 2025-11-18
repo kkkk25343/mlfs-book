@@ -16,15 +16,10 @@ import hsfs
 from pathlib import Path
 
 def get_historical_weather(city, start_date,  end_date, latitude, longitude):
-    # latitude, longitude = get_city_coordinates(city)
-
-    # Setup the Open-Meteo API client with cache and retry on error
     cache_session = requests_cache.CachedSession('.cache', expire_after = -1)
     retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
     openmeteo = openmeteo_requests.Client(session = retry_session)
 
-    # Make sure all required weather variables are listed here
-    # The order of variables in hourly or daily is important to assign them correctly below
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
         "latitude": latitude,
@@ -288,13 +283,78 @@ def check_file_path(file_path):
         print(f"File successfully found at the path: {file_path}")
 
 def backfill_predictions_for_monitoring(weather_fg, air_quality_df, monitor_fg, model):
+ 
     features_df = weather_fg.read()
     features_df = features_df.sort_values(by=['date'], ascending=True)
     features_df = features_df.tail(10)
-    features_df['predicted_pm25'] = model.predict(features_df[['temperature_2m_mean', 'precipitation_sum', 'wind_speed_10m_max', 'wind_direction_10m_dominant']])
-    df = pd.merge(features_df, air_quality_df[['date','pm25','street','country']], on="date")
+
+    rolling_df = air_quality_df[['date', 'pm25_rolling_mean_3d']].copy()
+    features_df = features_df.merge(rolling_df, on='date', how='left')
+
+    features_df = features_df.dropna(subset=['pm25_rolling_mean_3d'])
+    features_df['pm25_rolling_mean_3d'] = features_df['pm25_rolling_mean_3d'].astype('float32')
+
+    feature_cols = [
+        'pm25_rolling_mean_3d',
+        'temperature_2m_mean',
+        'precipitation_sum',
+        'wind_speed_10m_max',
+        'wind_direction_10m_dominant',
+    ]
+    features_df['predicted_pm25'] = model.predict(features_df[feature_cols])
+
+    outcome_cols = ['date', 'pm25', 'street', 'country']
+    if 'city' in air_quality_df.columns:
+        outcome_cols.append('city')
+
+    df = features_df.merge(
+        air_quality_df[outcome_cols],
+        on='date',
+        how='inner'
+    )
+
+    if 'city_x' in df.columns or 'city_y' in df.columns:
+        if 'city_x' in df.columns and 'city_y' in df.columns:
+          
+            df['city'] = df['city_x']
+        elif 'city_x' in df.columns:
+            df['city'] = df['city_x']
+        elif 'city_y' in df.columns:
+            df['city'] = df['city_y']
+       
+        df = df.drop(columns=[c for c in ['city_x', 'city_y'] if c in df.columns])
+
     df['days_before_forecast_day'] = 1
-    hindcast_df = df
-    df = df.drop('pm25', axis=1)
-    monitor_fg.insert(df, write_options={"wait_for_job": True})
+
+ 
+    hindcast_df = df[['date', 'pm25', 'predicted_pm25']].copy()
+
+
+    fg_cols = {feat.name.lower() for feat in monitor_fg.features}
+
+    insert_cols = [
+        'date',
+        'temperature_2m_mean',
+        'precipitation_sum',
+        'wind_speed_10m_max',
+        'wind_direction_10m_dominant',
+        'predicted_pm25',
+        'street',
+        'city',
+        'country',
+        'days_before_forecast_day',
+    ]
+  
+    if 'pm25_rolling_mean_3d' in fg_cols:
+        insert_cols.insert(5, 'pm25_rolling_mean_3d') 
+
+   
+    insert_cols = [c for c in insert_cols if c in df.columns]
+    insert_df = df[insert_cols].copy()
+
+    if 'pm25_rolling_mean_3d' in insert_df.columns:
+        insert_df['pm25_rolling_mean_3d'] = insert_df['pm25_rolling_mean_3d'].astype('float32')
+
+    monitor_fg.insert(insert_df, write_options={"wait_for_job": True})
+
     return hindcast_df
